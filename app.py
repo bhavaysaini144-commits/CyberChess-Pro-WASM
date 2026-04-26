@@ -2,12 +2,12 @@ from flask import Flask, render_template_string
 
 app = Flask(__name__)
 
-# --- CYBERCHESS: STANDALONE EDITION (NO DOWNLOADS) ---
+# --- CYBERCHESS: FINAL (WITH SAVE SYSTEM) ---
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>CyberChess | Standalone</title>
+    <title>CyberChess | Portfolio Edition</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
@@ -30,10 +30,20 @@ HTML_PAGE = """
 
         .btn { width: 100%; padding: 12px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 10px; transition: 0.2s; }
         .btn-hint { background: var(--highlight); color: white; }
+        .btn-save { background: #ff9100; color: black; } 
         .btn-reset { background: #444; color: white; }
+        .btn:hover { opacity: 0.9; transform: translateY(-1px); }
 
+        select { width: 100%; padding: 10px; background: #333; color: white; border: 1px solid #555; border-radius: 5px; margin-top: 5px; font-weight: bold; cursor: pointer; }
+        
         .highlight-hint { box-shadow: inset 0 0 3px 3px var(--highlight); }
         #debug-log { position: fixed; bottom: 0; left: 0; background: rgba(0,0,0,0.8); color: orange; font-size: 10px; padding: 5px; }
+
+        /* TOAST NOTIFICATION */
+        #toast { visibility: hidden; min-width: 200px; background-color: #333; color: #fff; text-align: center; border-radius: 4px; padding: 16px; position: fixed; z-index: 1; left: 50%; bottom: 30px; transform: translateX(-50%); border: 1px solid var(--accent); }
+        #toast.show { visibility: visible; animation: fadein 0.5s, fadeout 0.5s 2.5s; }
+        @keyframes fadein { from {bottom: 0; opacity: 0;} to {bottom: 30px; opacity: 1;} }
+        @keyframes fadeout { from {bottom: 30px; opacity: 1;} to {bottom: 0; opacity: 0;} }
 
         @media(max-width: 900px) { 
             .layout { flex-direction: column; } 
@@ -45,27 +55,45 @@ HTML_PAGE = """
 <body>
 
 <div class="nav">
-    <div class="brand"><i class="fas fa-shield-alt"></i> CYBERCHESS <span style="font-size:10px; background:var(--accent); color:#000; padding:2px 6px; border-radius:4px;">SECURE</span></div>
-    <div style="font-size: 12px; color: #666;">System: <span id="sys-status">Initializing...</span></div>
+    <div class="brand"><i class="fas fa-chess"></i> CYBERCHESS <span style="font-size:10px; background:var(--accent); color:#000; padding:2px 6px; border-radius:4px;">FINAL</span></div>
+    <div style="font-size: 12px; color: #666;">Engine: <span id="sys-status">Init...</span></div>
 </div>
 
 <div class="layout">
     <div class="game-area">
         <div id="myBoard" style="width: 480px"></div>
-        <div id="debug-log">Status: Graphics Generated Locally</div>
+        <div id="debug-log">Graphics: SVG Injected</div>
     </div>
     
     <div class="sidebar">
+        <!-- SETTINGS -->
+        <div class="coach-box" style="text-align: left;">
+            <div style="color:#fff; font-weight:bold; font-size: 12px; text-transform: uppercase;">Difficulty</div>
+            <select id="difficulty">
+                <option value="1">Novice (Depth 1)</option>
+                <option value="6" selected>Club (Depth 6)</option>
+                <option value="15">Master (Depth 15)</option>
+            </select>
+        </div>
+
+        <!-- STATS -->
         <div class="coach-box">
-            <div style="text-transform: uppercase; font-size: 12px; letter-spacing: 1px; color: #666;">Win Probability</div>
+            <div style="text-transform: uppercase; font-size: 12px; letter-spacing: 1px; color: #666;">Win Chance</div>
             <div class="eval-score" id="win-percent">50%</div>
-            <div style="color: #888; font-size: 14px;" id="coach-msg">Ready.</div>
+            <div style="color: #888; font-size: 14px;" id="coach-msg">Board Ready.</div>
             <div class="progress-container"><div class="progress-bar" id="win-bar"></div></div>
         </div>
 
+        <!-- CONTROLS -->
         <div class="coach-box" style="text-align: left;">
-            <div style="color:#fff; font-weight:bold; margin-bottom:5px;">Actions</div>
-            <button class="btn btn-hint" onclick="askCoach()"><i class="far fa-lightbulb"></i> AI Hint</button>
+            <div style="color:#fff; font-weight:bold; margin-bottom:5px;">Controls</div>
+            <button class="btn btn-hint" onclick="askCoach()"><i class="far fa-lightbulb"></i> Get Hint</button>
+            
+            <div style="display:flex; gap:10px; margin-top:10px;">
+                <button class="btn btn-save" onclick="saveGame()"><i class="fas fa-save"></i> Save</button>
+                <button class="btn btn-save" onclick="loadGame()"><i class="fas fa-upload"></i> Load</button>
+            </div>
+
             <div style="display:flex; gap:10px;">
                 <button class="btn btn-reset" onclick="undo()"><i class="fas fa-undo"></i> Undo</button>
                 <button class="btn btn-reset" onclick="reset()"><i class="fas fa-sync"></i> Reset</button>
@@ -73,6 +101,8 @@ HTML_PAGE = """
         </div>
     </div>
 </div>
+
+<div id="toast">Game Saved Locally!</div>
 
 <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
 <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
@@ -84,29 +114,48 @@ HTML_PAGE = """
     var stockfish = null;
     var bestMove = null;
 
-    // --- 1. THE GRAPHICS GENERATOR (NO DOWNLOADS) ---
-    // This function draws the pieces using code, so they cannot be blocked.
+    // --- 1. SVG RENDERER ---
     function pieceGenerator(piece) {
-        const symbols = {
-            'wP': '♟', 'wN': '♞', 'wB': '♝', 'wR': '♜', 'wQ': '♛', 'wK': '♔',
-            'bP': '♟', 'bN': '♞', 'bB': '♝', 'bR': '♜', 'bQ': '♛', 'bK': '♚'
-        };
+        const symbols = { 'wP': '♟', 'wN': '♞', 'wB': '♝', 'wR': '♜', 'wQ': '♛', 'wK': '♔', 'bP': '♟', 'bN': '♞', 'bB': '♝', 'bR': '♜', 'bQ': '♛', 'bK': '♚' };
         const color = piece[0] === 'w' ? '#e0e0e0' : '#121212';
         const stroke = piece[0] === 'w' ? '#121212' : '#e0e0e0';
-        const char = symbols[piece];
-        
-        // Create an SVG image on the fly
-        const svg = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 80 80">
-            <text x="50%" y="50%" dy=".35em" text-anchor="middle" 
-                  font-size="60" font-family="Arial, sans-serif" font-weight="bold"
-                  fill="${color}" stroke="${stroke}" stroke-width="2">${char}</text>
-        </svg>`;
-        
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 80 80">
+            <text x="50%" y="50%" dy=".35em" text-anchor="middle" font-size="60" font-family="Arial" font-weight="bold" fill="${color}" stroke="${stroke}" stroke-width="2">${symbols[piece]}</text></svg>`;
         return 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svg)));
     }
 
-    // --- 2. INITIALIZE BOARD ---
+    // --- 2. SAVE/LOAD SYSTEM (LOCAL STORAGE) ---
+    function saveGame() {
+        // Save the FEN string (The DNA of the current board)
+        localStorage.setItem('cyberchess_save', game.fen());
+        showToast("Game Saved to Browser Storage!");
+    }
+
+    function loadGame() {
+        var savedFen = localStorage.getItem('cyberchess_save');
+        if(savedFen) {
+            game.load(savedFen);
+            board.position(savedFen);
+            updateStatus();
+            showToast("Game Loaded!");
+            // Force engine to re-evaluate
+            if(stockfish) {
+                stockfish.postMessage("position fen " + game.fen());
+                stockfish.postMessage("go depth 10");
+            }
+        } else {
+            showToast("No saved game found.");
+        }
+    }
+
+    function showToast(msg) {
+        var x = document.getElementById("toast");
+        x.innerText = msg;
+        x.className = "show";
+        setTimeout(function(){ x.className = x.className.replace("show", ""); }, 3000);
+    }
+
+    // --- 3. CORE LOGIC ---
     function onDrop (source, target) {
         removeHighlights();
         var move = game.move({ from: source, to: target, promotion: 'q' });
@@ -115,16 +164,10 @@ HTML_PAGE = """
         if(stockfish) window.setTimeout(makeEngineMove, 250);
     }
 
-    var config = { 
-        draggable: true, 
-        position: 'start', 
-        onDrop: onDrop,
-        pieceTheme: pieceGenerator // <--- WE USE OUR GENERATOR HERE
-    };
+    var config = { draggable: true, position: 'start', onDrop: onDrop, pieceTheme: pieceGenerator };
     board = Chessboard('myBoard', config);
     $(window).resize(board.resize);
 
-    // --- 3. INITIALIZE ENGINE (BLOB METHOD) ---
     var engineUrl = 'https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.0/stockfish.js';
     fetch(engineUrl).then(r => r.blob()).then(blob => {
         stockfish = new Worker(URL.createObjectURL(blob));
@@ -145,17 +188,16 @@ HTML_PAGE = """
             }
         };
         stockfish.postMessage("uci");
-        document.getElementById('sys-status').innerText = "Engine Ready";
+        document.getElementById('sys-status').innerText = "Ready";
         document.getElementById('sys-status').style.color = "#00e676";
-    }).catch(e => {
-        document.getElementById('sys-status').innerText = "PvP Mode (Engine Blocked)";
     });
 
-    // --- 4. LOGIC ---
     function makeEngineMove() {
         if(game.game_over()) return;
+        var depth = document.getElementById('difficulty').value;
+        document.getElementById('coach-msg').innerText = "Thinking...";
         stockfish.postMessage("position fen " + game.fen());
-        stockfish.postMessage("go depth 12");
+        stockfish.postMessage("go depth " + depth);
     }
 
     function updateCoach(cp) {
@@ -163,11 +205,10 @@ HTML_PAGE = """
         var percent = Math.round(chance * 100);
         document.getElementById('win-bar').style.width = percent + "%";
         document.getElementById('win-percent').innerText = percent + "%";
-        
         var msg = document.getElementById('coach-msg');
-        if(percent > 60) { msg.innerText = "White Advantage"; msg.style.color = "#00e676"; }
-        else if(percent < 40) { msg.innerText = "Black Advantage"; msg.style.color = "#ff1744"; }
-        else { msg.innerText = "Equal Game"; msg.style.color = "#888"; }
+        if(percent > 60) { msg.innerText = "White Leads"; msg.style.color = "#00e676"; }
+        else if(percent < 40) { msg.innerText = "Black Leads"; msg.style.color = "#ff1744"; }
+        else { msg.innerText = "Equal"; msg.style.color = "#888"; }
     }
 
     function updateStatus() {
@@ -202,4 +243,3 @@ def index():
 
 if __name__ == '__main__':
     app.run(debug=True, port=8080)
-
